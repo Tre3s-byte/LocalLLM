@@ -1,3 +1,5 @@
+import inspect
+
 import gradio as gr
 from llama_cpp import Llama
 
@@ -12,6 +14,24 @@ llm = Llama(
 )
 
 SYSTEM_PROMPT = {"role": "system", "content": "You are a helpful assistant."}
+
+
+def _detect_chatbot_format():
+    """Pick a stable chatbot history format for the installed Gradio version."""
+    try:
+        params = inspect.signature(gr.Chatbot).parameters
+    except (TypeError, ValueError):
+        return "tuples"
+
+    # Newer Gradio versions support/expect message dictionaries.
+    if "type" in params:
+        return "messages"
+
+    # Older versions use tuple-pair format.
+    return "tuples"
+
+
+CHATBOT_FORMAT = _detect_chatbot_format()
 
 
 def _coerce_content_to_text(content):
@@ -79,43 +99,43 @@ def _normalize_history_for_model(history):
 
 
 def _normalize_history_for_ui(history):
-    """Return history in gr.Chatbot() default pair format: [[user, assistant], ...]."""
-    if not history:
-        return []
+    """Return history in format expected by the current Chatbot component."""
+    model_messages = _normalize_history_for_model(history)
+
+    if CHATBOT_FORMAT == "messages":
+        return model_messages
 
     pairs = []
     pending_user = None
+    for message in model_messages:
+        role = message["role"]
+        content = message["content"]
 
-    for item in history:
-        if isinstance(item, (list, tuple)) and len(item) == 2:
-            user_msg, assistant_msg = item
-            pairs.append(
-                [
-                    _coerce_content_to_text(user_msg),
-                    _coerce_content_to_text(assistant_msg),
-                ]
-            )
-            pending_user = None
-            continue
-
-        if isinstance(item, dict) and "role" in item and "content" in item:
-            role = item["role"]
-            text = _coerce_content_to_text(item["content"])
-            if role == "user":
-                if pending_user is not None:
-                    pairs.append([pending_user, ""])
-                pending_user = text
-            elif role == "assistant":
-                if pending_user is None:
-                    pairs.append(["", text])
-                else:
-                    pairs.append([pending_user, text])
-                    pending_user = None
+        if role == "user":
+            if pending_user is not None:
+                pairs.append([pending_user, ""])
+            pending_user = content
+        elif role == "assistant":
+            if pending_user is None:
+                pairs.append(["", content])
+            else:
+                pairs.append([pending_user, content])
+                pending_user = None
 
     if pending_user is not None:
         pairs.append([pending_user, ""])
 
     return pairs
+
+
+def _append_turn_to_ui_history(history, user_text, response):
+    updated_history = _normalize_history_for_ui(history)
+    if CHATBOT_FORMAT == "messages":
+        updated_history.append({"role": "user", "content": user_text})
+        updated_history.append({"role": "assistant", "content": response})
+    else:
+        updated_history.append([user_text, response])
+    return updated_history
 
 
 def chat(message, history):
@@ -134,9 +154,7 @@ def chat(message, history):
     except Exception as exc:
         response = f"Error: {exc}"
 
-    updated_history = _normalize_history_for_ui(history)
-    updated_history.append([user_text, response])
-    return "", updated_history
+    return "", _append_turn_to_ui_history(history, user_text, response)
 
 
 custom_css = """
@@ -167,7 +185,11 @@ textarea {
 with gr.Blocks() as demo:
     gr.Markdown("## Local LLM Chat")
 
-    chatbot = gr.Chatbot()
+    if CHATBOT_FORMAT == "messages":
+        chatbot = gr.Chatbot(type="messages")
+    else:
+        chatbot = gr.Chatbot()
+
     msg = gr.Textbox(placeholder="Type your message here...", lines=3)
     submit_btn = gr.Button("Submit")
     clear_btn = gr.Button("Clear")
