@@ -84,10 +84,10 @@ textarea {
 }
 """
 
-with gr.Blocks(css=custom_css) as demo:
+with gr.Blocks() as demo:
     gr.Markdown("## Local LLM Chat")
 
-    chatbot = gr.Chatbot(type="messages")
+    chatbot = gr.Chatbot()
     msg = gr.Textbox(placeholder="Type your message here...", lines=3)
     submit_btn = gr.Button("Submit")
     clear_btn = gr.Button("Clear")
@@ -96,4 +96,4 @@ with gr.Blocks(css=custom_css) as demo:
     submit_btn.click(chat, [msg, chatbot], [msg, chatbot])
     clear_btn.click(lambda: [], None, chatbot, queue=False)
 
-demo.launch()
+demo.launch(css=custom_css)
