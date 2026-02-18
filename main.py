@@ -14,35 +14,114 @@ llm = Llama(
 SYSTEM_PROMPT = {"role": "system", "content": "You are a helpful assistant."}
 
 
-def _normalize_history(history):
-    """Return Gradio history in OpenAI-style message format.
+def _coerce_content_to_text(content):
+    """Convert Gradio message content variants to plain text for llama.cpp."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, (int, float, bool)):
+        return str(content)
 
-    Supports both Chatbot tuple format: [[user, assistant], ...]
-    and message format: [{"role": ..., "content": ...}, ...].
-    """
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if text is None:
+                    text = item.get("content")
+                parts.append(_coerce_content_to_text(text))
+            else:
+                parts.append(str(item))
+        return "\n".join(part for part in parts if part)
+
+    if isinstance(content, dict):
+        text = content.get("text")
+        if text is None:
+            text = content.get("content")
+        return _coerce_content_to_text(text)
+
+    return str(content)
+
+
+def _normalize_history_for_model(history):
+    """Return history in OpenAI-style message format for llama.cpp."""
     if not history:
         return []
 
     normalized = []
     for item in history:
         if isinstance(item, dict) and "role" in item and "content" in item:
-            normalized.append({"role": item["role"], "content": item["content"]})
+            role = item["role"]
+            if role in {"user", "assistant", "system"}:
+                normalized.append(
+                    {"role": role, "content": _coerce_content_to_text(item["content"])}
+                )
             continue
 
         if isinstance(item, (list, tuple)) and len(item) == 2:
             user_msg, assistant_msg = item
-            if user_msg:
-                normalized.append({"role": "user", "content": user_msg})
-            if assistant_msg:
-                normalized.append({"role": "assistant", "content": assistant_msg})
+            if user_msg is not None:
+                normalized.append(
+                    {"role": "user", "content": _coerce_content_to_text(user_msg)}
+                )
+            if assistant_msg is not None:
+                normalized.append(
+                    {
+                        "role": "assistant",
+                        "content": _coerce_content_to_text(assistant_msg),
+                    }
+                )
 
     return normalized
 
 
-def chat(message, history):
-    history = _normalize_history(history)
+def _normalize_history_for_ui(history):
+    """Return history in gr.Chatbot() default pair format: [[user, assistant], ...]."""
+    if not history:
+        return []
 
-    messages = [SYSTEM_PROMPT, *history, {"role": "user", "content": message}]
+    pairs = []
+    pending_user = None
+
+    for item in history:
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            user_msg, assistant_msg = item
+            pairs.append(
+                [
+                    _coerce_content_to_text(user_msg),
+                    _coerce_content_to_text(assistant_msg),
+                ]
+            )
+            pending_user = None
+            continue
+
+        if isinstance(item, dict) and "role" in item and "content" in item:
+            role = item["role"]
+            text = _coerce_content_to_text(item["content"])
+            if role == "user":
+                if pending_user is not None:
+                    pairs.append([pending_user, ""])
+                pending_user = text
+            elif role == "assistant":
+                if pending_user is None:
+                    pairs.append(["", text])
+                else:
+                    pairs.append([pending_user, text])
+                    pending_user = None
+
+    if pending_user is not None:
+        pairs.append([pending_user, ""])
+
+    return pairs
+
+
+def chat(message, history):
+    user_text = _coerce_content_to_text(message)
+    model_history = _normalize_history_for_model(history)
+    messages = [SYSTEM_PROMPT, *model_history, {"role": "user", "content": user_text}]
 
     try:
         output = llm.create_chat_completion(
@@ -51,11 +130,12 @@ def chat(message, history):
             temperature=0.7,
             top_p=0.9,
         )
-        response = output["choices"][0]["message"]["content"].strip()
+        response = _coerce_content_to_text(output["choices"][0]["message"]["content"]).strip()
     except Exception as exc:
         response = f"Error: {exc}"
 
-    updated_history = [*history, {"role": "user", "content": message}, {"role": "assistant", "content": response}]
+    updated_history = _normalize_history_for_ui(history)
+    updated_history.append([user_text, response])
     return "", updated_history
 
 
