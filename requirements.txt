@@ -7,3 +7,7 @@ numpy
 fastapi
 uvicorn
 pydantic
+gradio
+sentence-transformers
+faiss-cpu
+pypdf
